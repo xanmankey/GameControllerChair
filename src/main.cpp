@@ -1,6 +1,7 @@
 #include <Arduino.h>
-#include <BleCompositeHID.h>
-#include "GamepadDevice.h"
+// #include <BleCompositeHID.h>
+#include <BleGamepad.h>
+// #include "GamepadDevice.h"
 #include <WiFi.h>
 #include <string.h>
 
@@ -12,19 +13,19 @@
 // GPIO_34, GPIO_35, GPIO_36, and GPIO_39 are input only pins and do not have internal resistors
 // ALSO AVOID USING GPIO_21 AT ALL COSTS: I WROTE THIS TO SCARE YOU AND THE PIN IS FINE
 
-#define A GPIO_NUM_33
-#define B GPIO_NUM_32
-#define X GPIO_NUM_25
-#define Y GPIO_NUM_26
+#define A GPIO_NUM_18
+#define B GPIO_NUM_19
+#define X GPIO_NUM_22
+#define Y GPIO_NUM_23
 
-#define UP GPIO_NUM_23
-#define DOWN GPIO_NUM_22
-#define LEFT GPIO_NUM_21
-#define RIGHT GPIO_NUM_19
+#define UP GPIO_NUM_26
+#define DOWN GPIO_NUM_25
+#define LEFT GPIO_NUM_14
+#define RIGHT GPIO_NUM_32
 
-#define CUP_DOWN GPIO_NUM_18
+#define CUP_DOWN GPIO_NUM_33
 // #define CDOWN GPIO_NUM_5
-#define CLEFT_RIGHT GPIO_NUM_17
+#define CLEFT_RIGHT GPIO_NUM_15
 // #define CRIGHT GPIO_NUM_16
 
 #define LB GPIO_NUM_27
@@ -33,7 +34,7 @@
 #define LT GPIO_NUM_34
 #define RT GPIO_NUM_35
 
-#define START GPIO_NUM_14
+#define START GPIO_NUM_21
 
 #define NUM_BUTTONS 7
 
@@ -47,15 +48,16 @@
 #define TRIGGER_MAX 255 // Standard 8-bit trigger range
 #define ANALOG_STICK_MAX 32767 // Standard signed 16-bit range for sticks
 
-BleCompositeHID compositeHID("CHAIR", "plugNplay", 100);
-GamepadDevice* gamepad;
-GamepadConfiguration bleGamepadConfig;
+BleGamepad gamepad("CHAIR", "plugNplay", 100);
+// GamepadDevice* gamepad;
+// GamepadConfiguration bleGamepadConfig;
 
 byte previousInputStates[NUM_BUTTONS];
 byte currentInputStates[NUM_BUTTONS];
 byte buttonPins[NUM_BUTTONS] = {A, B, X, Y, LB, RB, START};
 // NOTE: not sure what BUTTON_1-6 display as; there may be better choices to select for this
 byte physicalButtons[NUM_BUTTONS] = {BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4, BUTTON_5, BUTTON_6, START_BUTTON};
+bool start = false;
 
 void setup() {
   Serial.begin(115200);
@@ -68,17 +70,41 @@ void setup() {
   Serial.println("Starting...");
 
   // Buttons
-  pinMode(A, INPUT_PULLUP);
-  pinMode(B, INPUT_PULLUP);
-  pinMode(X, INPUT_PULLUP);
-  pinMode(Y, INPUT_PULLUP);
-  pinMode(LB, INPUT_PULLUP);
-  pinMode(RB, INPUT_PULLUP);
-  pinMode(START, INPUT_PULLUP);
+  pinMode(A, INPUT_PULLDOWN);
+  pinMode(B, INPUT_PULLDOWN);
+  pinMode(X, INPUT_PULLDOWN);
+  pinMode(Y, INPUT_PULLDOWN);
+  pinMode(LB, INPUT_PULLDOWN);
+  pinMode(RB, INPUT_PULLDOWN);
+  pinMode(START, INPUT_PULLDOWN);
   pinMode(RT, INPUT); // Analog
   pinMode(LT, INPUT); // Analog
 
-  // Axes
+  // Analog axes
+  pinMode(UP, INPUT);
+  pinMode(DOWN, INPUT);
+  pinMode(LEFT, INPUT);
+  pinMode(RIGHT, INPUT);
+  pinMode(CUP_DOWN, INPUT);
+  pinMode(CLEFT_RIGHT, INPUT);
+
+  // Gamepad configuration
+  // bleGamepadConfig.setAutoReport(false);
+  // bleGamepadConfig.setControllerType(CONTROLLER_TYPE_GAMEPAD); // CONTROLLER_TYPE_JOYSTICK, CONTROLLER_TYPE_GAMEPAD (DEFAULT), CONTROLLER_TYPE_MULTI_AXIS
+  // bleGamepadConfig.setButtonCount(NUM_BUTTONS);
+
+  // bleGamepadConfig.setWhichAxes(true, true, false, true, true, false, true, true);
+  // bleGamepadConfig.setIncludePlayerIndicators(false);
+
+  // bleGamepadConfig.setAxesMin(-32768); // -32768 --> int16_t - 16 bit signed integer - Can be in decimal or hexadecimal
+  // bleGamepadConfig.setAxesMax(32767); // 32767 --> int16_t - 16 bit signed integer - Can be in decimal or hexadecimal 
+  
+  // // gamepad = new GamepadDevice(bleGamepadConfig);
+
+  // compositeHID.addDevice(gamepad);
+  // compositeHID.begin();
+  // gamepad->setAxes(); // Reset all axes to zero before reading
+  gamepad.begin();
 }
 
 // When designing, make sure all magnetic poles are facing the same direction!
@@ -102,16 +128,70 @@ unsigned int mapAnalogInput(unsigned int pin, bool stick) {
 }
 
 void loop() {
-  // Serial.println("Looping");
-  // Serial.println("A: " + String(digitalRead(A)));
-  // Serial.println("B: " + String(digitalRead(B)));
-  // Serial.println("X: " + String(digitalRead(X)));
-  // Serial.println("Y: " + String(digitalRead(Y)));
-  // Serial.println("LB: " + String(digitalRead(LB)));
-  // Serial.println("RB: " + String(digitalRead(RB)));
-  // Serial.println("START: " + String(digitalRead(START)));
-  // Serial.println("LT: " + String(analogRead(LT)));
-  Serial.println("Trigger: " + String(mapAnalogInput(RT, false)));
-  Serial.println("Stick: " + String(mapAnalogInput(RT, true)));
-  delay(100);
+  if (gamepad.isConnected()) {
+    // Read buttons
+    for (int i = 0; i < NUM_BUTTONS; i++) {
+      currentInputStates[i] = digitalRead(buttonPins[i]);
+      if (buttonPins[i] == START) {
+        if (currentInputStates[i] != previousInputStates[i]) {
+          gamepad.press(physicalButtons[i]);
+          delay(1000);
+          // Serial.println("Start pressed");
+        }
+        else {
+          gamepad.release(physicalButtons[i]);
+          // Serial.println("Start released 2");
+        }
+        previousInputStates[i] = currentInputStates[i];
+      }
+      else if (currentInputStates[i] != previousInputStates[i]) {
+        // Handle start button differently
+        if (currentInputStates[i]) {
+          gamepad.press(physicalButtons[i]);
+        } else {
+          gamepad.release(physicalButtons[i]);
+        }
+        previousInputStates[i] = currentInputStates[i];
+      }
+    }
+
+    // Serial.print("Buttons: ");
+    // for (int i = 0; i < NUM_BUTTONS; i++) {
+    //   Serial.print(String(currentInputStates[i]) + " ");
+    // }
+    // Serial.println("Start current state: " + String(currentInputStates[6]));
+    // Serial.println("Start previous state: " + String(previousInputStates[6]));
+    // Serial.println("Start: " + String(currentInputStates[6]));
+
+    // Axes initialization
+    int32_t x = 0;
+    int32_t y = 0;
+
+    int32_t cX = 0;
+    int32_t cY = 0;
+
+    int16_t lt = 0;
+    int16_t rt = 0;
+
+    // Read analog stick axes
+    x = analogRead(LEFT) - analogRead(RIGHT);
+    y = analogRead(UP) - analogRead(DOWN);
+
+    // Read C stick axes
+    cX = analogRead(CLEFT_RIGHT);
+    cY = analogRead(CUP_DOWN);
+
+    // Read triggers
+    lt = analogRead(LT);
+    lt = mapAnalogInput(LT, false);
+    rt = analogRead(RT);
+    rt = mapAnalogInput(RT, false);
+
+    // Send axes and triggers to gamepad
+    gamepad.setAxes(x, y, cX, cY, lt, rt);
+  
+    Serial.println("X: " + String(x) + " Y: " + String(y) + " C_X: " + String(cX) + " C_Y: " + String(cY) + " LT: " + String(lt) + " RT: " + String(rt));
+  }
+  
+  delay(10); // Small delay to avoid overwhelming the BLE stack
 }
