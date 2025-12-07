@@ -1,77 +1,82 @@
 #include <Arduino.h>
-// #include <BleCompositeHID.h>
-#include <BleGamepad.h>
-// #include "GamepadDevice.h"
-#include <WiFi.h>
-#include <string.h>
 
-// 17 GPIO pins
-// Pinout for MCU at https://mischianti.org/wp-content/uploads/2021/03/ESP32-DOIT-DEV-KIT-v1-pinout-mischianti-1536x752.jpg
-// AVOID USING
-// GPIO_0 (used for boot), GPIO_1 and GPIO_3 (used for flashing and code upload)
-// NOTE:
-// GPIO_34, GPIO_35, GPIO_36, and GPIO_39 are input only pins and do not have internal resistors
-// ALSO AVOID USING GPIO_21 AT ALL COSTS: I WROTE THIS TO SCARE YOU AND THE PIN IS FINE
-
+// =======================
+// PIN DEFINITIONS
+// =======================
 #define A GPIO_NUM_18
 #define B GPIO_NUM_19
 #define X GPIO_NUM_22
 #define Y GPIO_NUM_23
-
-#define UP GPIO_NUM_26
-#define DOWN GPIO_NUM_25
-#define LEFT GPIO_NUM_14
-#define RIGHT GPIO_NUM_32
-
-#define CUP_DOWN GPIO_NUM_33
-// #define CDOWN GPIO_NUM_5
-#define CLEFT_RIGHT GPIO_NUM_15
-// #define CRIGHT GPIO_NUM_16
-
 #define LB GPIO_NUM_27
 #define RB GPIO_NUM_4
+#define START GPIO_NUM_21 
+
+#define PEDAL_UP    GPIO_NUM_26
+#define PEDAL_DOWN  GPIO_NUM_25
+#define PEDAL_LEFT  GPIO_NUM_36 // was 14, changed due to weird analog glitch with lb and rb
+#define PEDAL_RIGHT GPIO_NUM_32
+
+#define CSTICK_X    GPIO_NUM_15 
+#define CSTICK_Y    GPIO_NUM_33
 
 #define LT GPIO_NUM_34
 #define RT GPIO_NUM_35
 
-#define START GPIO_NUM_21
+// =======================
+// CALIBRATION (Adjusted for Feet-On-Pedals)
+// =======================
 
-#define NUM_BUTTONS 7
+// --- PEDAL RIGHT (Active Low) ---
+// Log: Rest ~1822, Max Press ~1703. Short range (~120).
+// Drift seen: Positive 0.25 (meaning value dropped below 1800).
+// New Rest: 1760 (Pushing threshold lower to ignore foot weight)
+#define RIGHT_REST 1760 
+#define RIGHT_MAX  1710 
 
-// Analog Stick, C stick, and triggers are not considered buttons by https://github.com/lemmingDev/ESP32-BLE-Gamepad
-// and will be handled as axes
-// Adjust parameters as needed for gameplay feel
-#define HALL_EFFECT_MIN_PRESSED 0 // Full magnet value
-#define HALL_EFFECT_DEADZONE 200 // Dead zone to avoid jitter; adjust as needed
-#define TRIGGER_MAX 255 // Standard 8-bit trigger range
-#define ANALOG_STICK_MAX 32767 // Standard signed 16-bit range for sticks
+// --- PEDAL LEFT (Active High) ---
+// Log: Rest ~2080.
+// New Rest: 2200 (Raised to ignore foot weight)
+#define LEFT_REST 2200  
+#define LEFT_MAX  2800
 
-// TODO: start button should be ok, but pedals and triggers still need to be figured out
-#define LT_REST 3550
-#define RT_REST 3760
-#define X_REST 250
-#define Y_REST 1600
+// --- PEDAL UP (Active High) ---
+// Log: Rest ~1983.
+// New Rest: 2100 (Raised to ignore foot weight)
+#define UP_REST   2050  
+#define UP_MAX    2400  
 
-BleGamepad gamepad("CHAIR", "plugNplay", 100);
-// GamepadDevice* gamepad;
-// GamepadConfiguration bleGamepadConfig;
+// --- PEDAL DOWN (Active High) ---
+// Log: Rest ~1920.
+// Drift seen: Negative 0.08 (meaning value went above 2000).
+// New Rest: 2100 (Raised to ignore foot weight)
+#define DOWN_REST 2050  
+#define DOWN_MAX  2400
 
-byte previousInputStates[NUM_BUTTONS];
-byte currentInputStates[NUM_BUTTONS];
-byte buttonPins[NUM_BUTTONS] = {A, B, X, Y, LB, RB, START};
-// NOTE: not sure what BUTTON_1-6 display as; there may be better choices to select for this
-byte physicalButtons[NUM_BUTTONS] = {BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4, BUTTON_5, BUTTON_6, BUTTON_7};
-bool start = false;
+// --- JOYSTICK & TRIGGERS ---
+#define JOY_CENTER 1850 
+#define JOY_DEADZONE 250
+#define JOY_MIN 0
+#define JOY_MAX 4095
+
+#define LT_MIN 2160  
+#define LT_MAX 2750
+#define RT_MIN 2160
+#define RT_MAX 2800
+
+#define TARGET_MAX 255
+
+// =======================
+// VARIABLES
+// =======================
+unsigned long lastLoopTime = 0;
+const int loopInterval = 10; 
+int prevStartReading = -1;       
+bool virtualStartButtonState = false; 
+unsigned long startButtonTimer = 0;   
+const int startButtonDuration = 100;  
 
 void setup() {
   Serial.begin(115200);
-  // Disable wifi as a power optimization
-  WiFi.mode(WIFI_OFF);
-
-  while (!Serial) {
-    delay(1); // will pause Zero, Leonardo, etc until serial console opens
-  }
-  Serial.println("Starting...");
 
   // Buttons
   pinMode(A, INPUT_PULLDOWN);
@@ -81,140 +86,100 @@ void setup() {
   pinMode(LB, INPUT_PULLDOWN);
   pinMode(RB, INPUT_PULLDOWN);
   pinMode(START, INPUT_PULLDOWN);
-  pinMode(RT, INPUT); // Analog
-  pinMode(LT, INPUT); // Analog
 
-  // Analog axes
-  pinMode(UP, INPUT);
-  pinMode(DOWN, INPUT);
-  pinMode(LEFT, INPUT);
-  pinMode(RIGHT, INPUT);
-  pinMode(CUP_DOWN, INPUT);
-  pinMode(CLEFT_RIGHT, INPUT);
+  // Pedals
+  pinMode(PEDAL_UP, INPUT);
+  pinMode(PEDAL_DOWN, INPUT);
+  pinMode(PEDAL_LEFT, INPUT);
+  pinMode(PEDAL_RIGHT, INPUT);
 
-  // Gamepad configuration
-  // bleGamepadConfig.setAutoReport(false);
-  // bleGamepadConfig.setControllerType(CONTROLLER_TYPE_GAMEPAD); // CONTROLLER_TYPE_JOYSTICK, CONTROLLER_TYPE_GAMEPAD (DEFAULT), CONTROLLER_TYPE_MULTI_AXIS
-  // bleGamepadConfig.setButtonCount(NUM_BUTTONS);
-
-  // bleGamepadConfig.setWhichAxes(true, true, false, true, true, false, true, true);
-  // bleGamepadConfig.setIncludePlayerIndicators(false);
-
-  // bleGamepadConfig.setAxesMin(-32768); // -32768 --> int16_t - 16 bit signed integer - Can be in decimal or hexadecimal
-  // bleGamepadConfig.setAxesMax(32767); // 32767 --> int16_t - 16 bit signed integer - Can be in decimal or hexadecimal 
-  
-  // // gamepad = new GamepadDevice(bleGamepadConfig);
-
-  // compositeHID.addDevice(gamepad);
-  // compositeHID.begin();
-  // gamepad->setAxes(); // Reset all axes to zero before reading
-  gamepad.begin();
+  // C-Stick & Triggers
+  pinMode(CSTICK_X, INPUT);
+  pinMode(CSTICK_Y, INPUT);
+  pinMode(LT, INPUT);
+  pinMode(RT, INPUT);
 }
 
-// When designing, make sure all magnetic poles are facing the same direction!
-int mapAnalogInput(unsigned int pin, bool isStick, bool isX = false, bool isY = false) {
-  unsigned int pinValue = analogRead(pin);
+// Helper: Active High Mapping (Value goes UP)
+int mapActiveHigh(int val, int rest, int max_val) {
+    if (val < rest) return 0; // Deadzone
+    int mapped = map(val, rest, max_val, 0, 127);
+    return constrain(mapped, 0, 127);
+}
 
-  if (!isStick) {
-    // Trigger
-    // if (pinValue > HALL_EFFECT_RESTING_TRIGGERS) pinValue = HALL_EFFECT_RESTING_TRIGGERS;
-    // if (pinValue < TRIGGER_REST) return 0;
-    if (pin == LT) {
-      if (pinValue > LT_REST) return 0;
-      return map(pinValue, LT_REST, HALL_EFFECT_MIN_PRESSED, 0, TRIGGER_MAX);
-    } else if (pin == RT) {
-      if (pinValue > RT_REST) return 0;
-      return map(pinValue, RT_REST, HALL_EFFECT_MIN_PRESSED, 0, TRIGGER_MAX);
-    }
-  } else {
-    // Analog stick
-    if (isX) {
-      if (pinValue > X_REST) return 0;
-      return map(pinValue, X_REST, HALL_EFFECT_MIN_PRESSED, 0, ANALOG_STICK_MAX);
-    } else if (isY) {
-      if (pinValue > Y_REST) return 0;
-      return map(pinValue, Y_REST, HALL_EFFECT_MIN_PRESSED, 0, ANALOG_STICK_MAX);
-    }
-  }
+// Helper: Active Low Mapping (Value goes DOWN) - Specifically for Right Pedal
+int mapActiveLow(int val, int rest, int max_val) {
+    if (val > rest) return 0; // Deadzone (Value is higher than threshold)
+    // Map from Rest(High) -> Max(Low) to 0 -> 127
+    int mapped = map(val, rest, max_val, 0, 127);
+    return constrain(mapped, 0, 127);
+}
+
+int mapJoystick(int val) {
+    int centered = val - JOY_CENTER;
+    if (abs(centered) < JOY_DEADZONE) return 0;
+    int result = 0;
+    if (centered > 0) result = map(centered, JOY_DEADZONE, (JOY_MAX - JOY_CENTER), 0, 127);
+    else result = map(centered, -JOY_DEADZONE, -(JOY_CENTER - JOY_MIN), 0, -127);
+    return constrain(result, -127, 127);
+}
+
+int mapTrigger(int val, int min_t, int max_t) {
+    if (val < min_t) return 0;
+    long mapped = map(val, min_t, max_t, 0, TARGET_MAX);
+    return constrain(mapped, 0, TARGET_MAX);
 }
 
 void loop() {
-  if (gamepad.isConnected()) {
-    // Read buttons
-    for (int i = 0; i < NUM_BUTTONS; i++) {
-      currentInputStates[i] = digitalRead(buttonPins[i]);
-      if (buttonPins[i] == START) {
-        if (currentInputStates[i] != previousInputStates[i]) {
-          gamepad.press(physicalButtons[i]);
-          delay(100);
-        }
-        else {
-          gamepad.release(physicalButtons[i]);
-          // Serial.println("Start released 2");
-        }
-        previousInputStates[i] = currentInputStates[i];
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastLoopTime >= loopInterval) {
+    lastLoopTime = currentMillis;
+
+    // --- START BUTTON ---
+    int currentStartReading = digitalRead(START);
+    if (currentStartReading != prevStartReading) {
+      if (prevStartReading != -1) { 
+        virtualStartButtonState = true; 
+        startButtonTimer = currentMillis; 
       }
-      else if (currentInputStates[i] != previousInputStates[i]) {
-        // Handle start button differently
-        if (currentInputStates[i]) {
-          gamepad.press(physicalButtons[i]);
-        } else {
-          gamepad.release(physicalButtons[i]);
-        }
-        previousInputStates[i] = currentInputStates[i];
-      }
+      prevStartReading = currentStartReading; 
+    }
+    if (virtualStartButtonState && (currentMillis - startButtonTimer > startButtonDuration)) {
+      virtualStartButtonState = false; 
     }
 
-    // Serial.print("Buttons: ");
-    // for (int i = 0; i < NUM_BUTTONS; i++) {
-    //   Serial.print(String(currentInputStates[i]) + " ");
-    // }
-    // Serial.println("Start current state: " + String(currentInputStates[6]));
-    // Serial.println("Start previous state: " + String(previousInputStates[6]));
-    // Serial.println("Start: " + String(currentInputStates[6]));
+    // --- BUTTONS ---
+    int b_a = digitalRead(A);
+    int b_b = digitalRead(B);
+    int b_x = digitalRead(X);
+    int b_y = digitalRead(Y);
+    int b_lb = digitalRead(LB);
+    int b_rb = digitalRead(RB);
 
-    // Axes initialization
-    int32_t x = 0;
-    int32_t y = 0;
+    // --- PEDALS ---
+    int valRight = mapActiveLow(analogRead(PEDAL_RIGHT), RIGHT_REST, RIGHT_MAX);
+    int valLeft  = mapActiveHigh(analogRead(PEDAL_LEFT), LEFT_REST, LEFT_MAX);
+    int valUp    = mapActiveHigh(analogRead(PEDAL_UP), UP_REST, UP_MAX);
+    int valDown  = mapActiveHigh(analogRead(PEDAL_DOWN), DOWN_REST, DOWN_MAX);
 
-    int32_t cX = 0;
-    int32_t cY = 0;
+    // Combine into Axes
+    int lx = valRight - valLeft; 
+    int ly = valUp - valDown;
 
-    int16_t lt = 0;
-    int16_t rt = 0;
+    // --- C-STICK ---
+    int cx = mapJoystick(analogRead(CSTICK_X));
+    // int cx = analogRead(CSTICK_X);
+    int cy = mapJoystick(analogRead(CSTICK_Y));
+    // int cy = analogRead(CSTICK_Y); 
 
-    // Read analog stick axes
-    // TODO: no thresholding for pedals, left and right triggers, start button, making sure axes get pressed in gamepad tester
-    x = analogRead(LEFT) - analogRead(RIGHT);
-    y = analogRead(UP) - analogRead(DOWN);
+    // --- TRIGGERS ---
+    int trig_l = mapTrigger(analogRead(LT), LT_MIN, LT_MAX);
+    int trig_r = mapTrigger(analogRead(RT), RT_MIN, RT_MAX);
 
-    // Read C stick axes
-    cX = analogRead(CLEFT_RIGHT);
-    cY = analogRead(CUP_DOWN);
-
-    // Read triggers
-    lt = analogRead(LT);
-    // lt = mapAnalogInput(LT, false);
-    rt = analogRead(RT);
-    // rt = mapAnalogInput(RT, false);
-
-    Serial.println("X: " + String(x) + " Y: " + String(y) + " C_X: " + String(cX) + " C_Y: " + String(cY) + " LT: " + String(lt) + " RT: " + String(rt));
-    delay(1000);
-
-    lt = mapAnalogInput(LT, false);
-    rt = mapAnalogInput(RT, false);
-    x = mapAnalogInput(LEFT, true, true, false) - mapAnalogInput(RIGHT, true, true, false);
-    y = mapAnalogInput(UP, true, false, true) - mapAnalogInput(DOWN, true, false, true);
-    cX = map(analogRead(CLEFT_RIGHT), 0, 4095, -ANALOG_STICK_MAX, ANALOG_STICK_MAX);
-    cY = map(analogRead(CUP_DOWN), 0, 4095, -ANALOG_STICK_MAX, ANALOG_STICK_MAX);
-
-    delay(1000);
-    Serial.println("Mapped X: " + String(x) + " Y: " + String(y) + " C_X: " + String(cX) + " C_Y: " + String(cY) + " LT: " + String(lt) + " RT: " + String(rt));
-
-    // Send axes and triggers to gamepad
-    gamepad.setAxes(x, y, 0, cX, cY, 0, lt, rt);
-  
+    // Serial.println("CX: " + String(cx) + " CY: " + String(cy));
+    // --- SEND DATA ---
+    Serial.printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n", 
+      virtualStartButtonState, b_a, b_b, b_x, b_y, b_lb, b_rb, lx, ly, cy, cx, trig_l, trig_r);
   }
-  
-  delay(10); // Small delay to avoid overwhelming the BLE stack
 }
