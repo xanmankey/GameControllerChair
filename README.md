@@ -2,7 +2,9 @@
 
 So we decided to build a gaming chair... and by that we mean a chair that you can use to play video games!
 
-[Back of the chair, set up to play Crazy Taxi](chairpicback.jpg) [Front of the chair; we will definitely be installing wheels, the cart was NOT the play](chairpicfront.jpg)
+![Back of the chair, set up to play Crazy Taxi](resources/imgs/chairpicback.jpg)
+
+![Front of the chair; we will definitely be installing wheels, the cart was NOT the play](resources/imgs/chairpicfront.jpg)
 
 Below you can find a quick writeup on the components of our chair, as well as the BOM in case you want to build a "gaming" chair yourself or adapt an existing chair into one.
 
